@@ -3,7 +3,7 @@ import pandas as pd
 from io import BytesIO
 
 st.title("AI-Based MBA Timetable Scheduler")
-st.write("Course-wise sectioning with dynamic classroom capacity")
+st.write("Optimized scheduling with conflict control and dynamic classroom capacity")
 
 # --------------------------------------------------
 # PARAMETERS
@@ -12,11 +12,10 @@ SECTION_LIMIT = 70
 SESSIONS_PER_SECTION = 20
 
 weeks = list(range(1, 11))
-days = list(range(1, 7))   # Mon–Sat
-slots = list(range(1, 7))  # 6 slots/day
+days = list(range(1, 7))
+slots = list(range(1, 7))
 
 def get_rooms(week):
-    # Capacity drop after Week 4
     return list(range(1, 11)) if week <= 4 else list(range(1, 5))
 
 # --------------------------------------------------
@@ -31,14 +30,12 @@ if uploaded_file:
     sections = []
     section_students = {}
     student_sections = {}
-
     course_summary = []
 
     # --------------------------------------------------
-    # COURSE-WISE SECTION CREATION (Correct Logic)
+    # COURSE-WISE SECTION CREATION
     # --------------------------------------------------
     for sheet in xls.sheet_names:
-
         df = pd.read_excel(uploaded_file, sheet_name=sheet)
         students = df.iloc[:, 0].dropna().astype(str).tolist()
         students = list(set(students))  # remove duplicates
@@ -47,22 +44,18 @@ if uploaded_file:
         if n == 0:
             continue
 
-        # Decide number of sections
         if n <= SECTION_LIMIT:
-            sec_name = f"{sheet}_A"
-            sections.append(sec_name)
-            section_students[sec_name] = students
+            sec = f"{sheet}_A"
+            sections.append(sec)
+            section_students[sec] = students
             course_summary.append([sheet, n, 1])
-
         else:
             mid = n // 2
             sec1 = f"{sheet}_A"
             sec2 = f"{sheet}_B"
-
             sections.extend([sec1, sec2])
             section_students[sec1] = students[:mid]
             section_students[sec2] = students[mid:]
-
             course_summary.append([sheet, n, 2])
 
     # Student → sections mapping
@@ -71,11 +64,10 @@ if uploaded_file:
             student_sections.setdefault(s, []).append(sec)
 
     st.success(f"Total Courses: {len(course_summary)}")
-    st.success(f"Total Teaching Sections Created: {len(sections)}")
+    st.success(f"Total Sections Created: {len(sections)}")
 
-    summary_df = pd.DataFrame(course_summary, columns=[
-        "Course", "Enrollment", "Sections Created"
-    ])
+    summary_df = pd.DataFrame(course_summary,
+                              columns=["Course", "Enrollment", "Sections"])
     st.subheader("Course-wise Section Summary")
     st.dataframe(summary_df)
 
@@ -84,12 +76,19 @@ if uploaded_file:
     # --------------------------------------------------
     if st.button("Generate Timetable"):
 
+        # PRIORITY FIX 1: Schedule large sections first
+        sections_sorted = sorted(
+            sections,
+            key=lambda x: len(section_students[x]),
+            reverse=True
+        )
+
         room_usage = {}
         student_usage = {}
         schedule = []
-        session_count = {sec: 0 for sec in sections}
+        session_count = {sec: 0 for sec in sections_sorted}
 
-        # Create time order (front-load Weeks 1–4)
+        # PRIORITY FIX 2: Distribute sessions across weeks
         time_slots = []
         for week in weeks:
             for day in days:
@@ -97,12 +96,13 @@ if uploaded_file:
                     for room in get_rooms(week):
                         time_slots.append((week, day, slot, room))
 
-        time_slots.sort(key=lambda x: x[0])  # early weeks first
+        # Spread instead of clustering early weeks
+        time_slots.sort(key=lambda x: (x[1], x[2], x[0]))
 
         # --------------------------------------------------
         # GREEDY SCHEDULING
         # --------------------------------------------------
-        for sec in sections:
+        for sec in sections_sorted:
 
             students = section_students[sec]
 
@@ -125,7 +125,7 @@ if uploaded_file:
                 if conflict:
                     continue
 
-                # Assign session
+                # Assign
                 schedule.append([sec, week, day, slot, room])
                 room_usage[(week, day, slot, room)] = sec
 
@@ -137,11 +137,10 @@ if uploaded_file:
         # --------------------------------------------------
         # RESULTS
         # --------------------------------------------------
-        schedule_df = pd.DataFrame(schedule, columns=[
-            "Section", "Week", "Day", "Slot", "Room"
-        ])
+        schedule_df = pd.DataFrame(schedule,
+                                   columns=["Section", "Week", "Day", "Slot", "Room"])
 
-        total_required = len(sections) * SESSIONS_PER_SECTION
+        total_required = len(sections_sorted) * SESSIONS_PER_SECTION
         total_scheduled = len(schedule_df)
         completion_rate = round((total_scheduled / total_required) * 100, 2)
 
@@ -152,13 +151,15 @@ if uploaded_file:
 
         if completion_rate == 100:
             st.success("Complete conflict-free timetable generated")
+        elif completion_rate >= 90:
+            st.warning("Near-complete scheduling. Minor conflicts due to high student overlap.")
         else:
-            st.warning("Full scheduling not achieved due to capacity constraints")
+            st.error("Low completion due to heavy student overlap. Consider additional slots or rooms.")
 
-        st.subheader("Sample Output")
+        st.subheader("Sample Schedule")
         st.dataframe(schedule_df.head(20))
 
-        # Download file
+        # Download
         output = BytesIO()
         schedule_df.to_excel(output, index=False)
         output.seek(0)
