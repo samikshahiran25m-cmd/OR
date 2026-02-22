@@ -2,80 +2,86 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 
-st.title("MBA Timetable Scheduler (2 Section Model)")
-st.write("Program-level scheduling with Section A and Section B")
+st.title("AI-Based MBA Timetable Scheduler")
+st.write("Course-wise sectioning with dynamic classroom capacity")
 
-# --------------------------
+# --------------------------------------------------
 # PARAMETERS
-# --------------------------
+# --------------------------------------------------
+SECTION_LIMIT = 70
 SESSIONS_PER_SECTION = 20
 
 weeks = list(range(1, 11))
-days = list(range(1, 7))
-slots = list(range(1, 7))
+days = list(range(1, 7))   # Mon–Sat
+slots = list(range(1, 7))  # 6 slots/day
 
 def get_rooms(week):
+    # Capacity drop after Week 4
     return list(range(1, 11)) if week <= 4 else list(range(1, 5))
 
-# --------------------------
+# --------------------------------------------------
 # FILE UPLOAD
-# --------------------------
+# --------------------------------------------------
 uploaded_file = st.file_uploader("Upload WAI_Data.xlsx", type=["xlsx"])
 
 if uploaded_file:
 
     xls = pd.ExcelFile(uploaded_file)
 
-    # --------------------------
-    # GET UNIQUE STUDENTS
-    # --------------------------
-    all_students = set()
-    course_students = {}
-
-    for sheet in xls.sheet_names:
-        df = pd.read_excel(uploaded_file, sheet_name=sheet)
-        students = df.iloc[:, 0].dropna().astype(str).tolist()
-        course_students[sheet] = students
-        all_students.update(students)
-
-    all_students = list(all_students)
-
-    # --------------------------
-    # CREATE TWO SECTIONS
-    # --------------------------
-    mid = len(all_students) // 2
-    section_A_students = set(all_students[:mid])
-    section_B_students = set(all_students[mid:])
-
-    st.success(f"Total Students: {len(all_students)}")
-    st.success("Program divided into Section A and Section B")
-
-    # --------------------------
-    # CREATE COURSE-SECTIONS
-    # Each course runs for A and B
-    # --------------------------
     sections = []
     section_students = {}
+    student_sections = {}
 
-    for course in course_students:
-        secA = f"{course}_A"
-        secB = f"{course}_B"
+    course_summary = []
 
-        # Students of that course belonging to each section
-        section_students[secA] = list(
-            set(course_students[course]) & section_A_students
-        )
-        section_students[secB] = list(
-            set(course_students[course]) & section_B_students
-        )
+    # --------------------------------------------------
+    # COURSE-WISE SECTION CREATION (Correct Logic)
+    # --------------------------------------------------
+    for sheet in xls.sheet_names:
 
-        sections.extend([secA, secB])
+        df = pd.read_excel(uploaded_file, sheet_name=sheet)
+        students = df.iloc[:, 0].dropna().astype(str).tolist()
+        students = list(set(students))  # remove duplicates
+        n = len(students)
 
-    st.success(f"Total Teaching Sections: {len(sections)}")
+        if n == 0:
+            continue
 
-    # --------------------------
+        # Decide number of sections
+        if n <= SECTION_LIMIT:
+            sec_name = f"{sheet}_A"
+            sections.append(sec_name)
+            section_students[sec_name] = students
+            course_summary.append([sheet, n, 1])
+
+        else:
+            mid = n // 2
+            sec1 = f"{sheet}_A"
+            sec2 = f"{sheet}_B"
+
+            sections.extend([sec1, sec2])
+            section_students[sec1] = students[:mid]
+            section_students[sec2] = students[mid:]
+
+            course_summary.append([sheet, n, 2])
+
+    # Student → sections mapping
+    for sec, students in section_students.items():
+        for s in students:
+            student_sections.setdefault(s, []).append(sec)
+
+    st.success(f"Total Courses: {len(course_summary)}")
+    st.success(f"Total Teaching Sections Created: {len(sections)}")
+
+    summary_df = pd.DataFrame(course_summary, columns=[
+        "Course", "Enrollment", "Sections Created"
+    ])
+    st.subheader("Course-wise Section Summary")
+    st.dataframe(summary_df)
+
+    # --------------------------------------------------
     # GENERATE TIMETABLE
-    # --------------------------
+    # --------------------------------------------------
     if st.button("Generate Timetable"):
 
         room_usage = {}
@@ -83,7 +89,7 @@ if uploaded_file:
         schedule = []
         session_count = {sec: 0 for sec in sections}
 
-        # Time priority (front-load early weeks)
+        # Create time order (front-load Weeks 1–4)
         time_slots = []
         for week in weeks:
             for day in days:
@@ -91,12 +97,13 @@ if uploaded_file:
                     for room in get_rooms(week):
                         time_slots.append((week, day, slot, room))
 
-        time_slots.sort(key=lambda x: x[0])  # weeks 1–4 first
+        time_slots.sort(key=lambda x: x[0])  # early weeks first
 
-        # --------------------------
-        # GREEDY ASSIGNMENT
-        # --------------------------
+        # --------------------------------------------------
+        # GREEDY SCHEDULING
+        # --------------------------------------------------
         for sec in sections:
+
             students = section_students[sec]
 
             for (week, day, slot, room) in time_slots:
@@ -118,7 +125,7 @@ if uploaded_file:
                 if conflict:
                     continue
 
-                # Assign
+                # Assign session
                 schedule.append([sec, week, day, slot, room])
                 room_usage[(week, day, slot, room)] = sec
 
@@ -127,37 +134,37 @@ if uploaded_file:
 
                 session_count[sec] += 1
 
-        # --------------------------
-        # OUTPUT
-        # --------------------------
-        schedule_df = pd.DataFrame(
-            schedule,
-            columns=["Section", "Week", "Day", "Slot", "Room"]
-        )
+        # --------------------------------------------------
+        # RESULTS
+        # --------------------------------------------------
+        schedule_df = pd.DataFrame(schedule, columns=[
+            "Section", "Week", "Day", "Slot", "Room"
+        ])
 
         total_required = len(sections) * SESSIONS_PER_SECTION
         total_scheduled = len(schedule_df)
-        completion = round((total_scheduled / total_required) * 100, 2)
+        completion_rate = round((total_scheduled / total_required) * 100, 2)
 
         st.subheader("Scheduling Summary")
-        st.write("Sessions Required:", total_required)
-        st.write("Sessions Scheduled:", total_scheduled)
-        st.write("Completion Rate:", completion, "%")
+        st.write("Total Sessions Required:", total_required)
+        st.write("Total Sessions Scheduled:", total_scheduled)
+        st.write("Completion Rate:", completion_rate, "%")
 
-        if completion == 100:
-            st.success("Complete timetable generated")
+        if completion_rate == 100:
+            st.success("Complete conflict-free timetable generated")
         else:
-            st.warning("Capacity constraints prevented full scheduling")
+            st.warning("Full scheduling not achieved due to capacity constraints")
 
+        st.subheader("Sample Output")
         st.dataframe(schedule_df.head(20))
 
-        # Download
+        # Download file
         output = BytesIO()
         schedule_df.to_excel(output, index=False)
         output.seek(0)
 
         st.download_button(
-            "Download Timetable",
+            "Download Final Timetable",
             output,
             "Final_Timetable.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
