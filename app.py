@@ -1,15 +1,17 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
+import random
 
 st.title("AI-Based MBA Timetable Scheduler")
-st.write("Optimized scheduling with conflict control and dynamic classroom capacity")
+st.write("Block-based scheduling with dynamic classroom capacity")
 
 # --------------------------------------------------
 # PARAMETERS
 # --------------------------------------------------
 SECTION_LIMIT = 70
 SESSIONS_PER_SECTION = 20
+NUM_BLOCKS = 5   # Elective baskets
 
 weeks = list(range(1, 11))
 days = list(range(1, 7))
@@ -29,16 +31,16 @@ if uploaded_file:
 
     sections = []
     section_students = {}
-    student_sections = {}
     course_summary = []
 
     # --------------------------------------------------
     # COURSE-WISE SECTION CREATION
     # --------------------------------------------------
     for sheet in xls.sheet_names:
+
         df = pd.read_excel(uploaded_file, sheet_name=sheet)
         students = df.iloc[:, 0].dropna().astype(str).tolist()
-        students = list(set(students))  # remove duplicates
+        students = list(set(students))
         n = len(students)
 
         if n == 0:
@@ -58,12 +60,6 @@ if uploaded_file:
             section_students[sec2] = students[mid:]
             course_summary.append([sheet, n, 2])
 
-    # Student → sections mapping
-    for sec, students in section_students.items():
-        for s in students:
-            student_sections.setdefault(s, []).append(sec)
-
-    st.success(f"Total Courses: {len(course_summary)}")
     st.success(f"Total Sections Created: {len(sections)}")
 
     summary_df = pd.DataFrame(course_summary,
@@ -72,23 +68,33 @@ if uploaded_file:
     st.dataframe(summary_df)
 
     # --------------------------------------------------
+    # ASSIGN BLOCKS (Elective baskets)
+    # --------------------------------------------------
+    random.seed(42)
+    section_block = {}
+
+    for sec in sections:
+        section_block[sec] = random.randint(1, NUM_BLOCKS)
+
+    block_df = pd.DataFrame(
+        [(sec, section_block[sec]) for sec in sections],
+        columns=["Section", "Block"]
+    )
+
+    st.subheader("Block Allocation")
+    st.dataframe(block_df.head(20))
+
+    # --------------------------------------------------
     # GENERATE TIMETABLE
     # --------------------------------------------------
     if st.button("Generate Timetable"):
 
-        # PRIORITY FIX 1: Schedule large sections first
-        sections_sorted = sorted(
-            sections,
-            key=lambda x: len(section_students[x]),
-            reverse=True
-        )
-
         room_usage = {}
-        student_usage = {}
+        block_usage = {}
         schedule = []
-        session_count = {sec: 0 for sec in sections_sorted}
+        session_count = {sec: 0 for sec in sections}
 
-        # PRIORITY FIX 2: Distribute sessions across weeks
+        # Time slots
         time_slots = []
         for week in weeks:
             for day in days:
@@ -96,15 +102,13 @@ if uploaded_file:
                     for room in get_rooms(week):
                         time_slots.append((week, day, slot, room))
 
-        # Spread instead of clustering early weeks
+        # Spread sessions across term
         time_slots.sort(key=lambda x: (x[1], x[2], x[0]))
 
-        # --------------------------------------------------
-        # GREEDY SCHEDULING
-        # --------------------------------------------------
-        for sec in sections_sorted:
+        # Schedule sections block-wise
+        for sec in sections:
 
-            students = section_students[sec]
+            block = section_block[sec]
 
             for (week, day, slot, room) in time_slots:
 
@@ -115,32 +119,32 @@ if uploaded_file:
                 if (week, day, slot, room) in room_usage:
                     continue
 
-                # Student conflict
-                conflict = False
-                for s in students:
-                    if (week, day, slot) in student_usage.get(s, set()):
-                        conflict = True
-                        break
-
-                if conflict:
+                # Block conflict (only one course per block at a time)
+                if (week, day, slot, block) in block_usage:
                     continue
 
                 # Assign
-                schedule.append([sec, week, day, slot, room])
+                schedule.append([
+                    sec,
+                    block,
+                    week,
+                    day,
+                    slot,
+                    room
+                ])
+
                 room_usage[(week, day, slot, room)] = sec
-
-                for s in students:
-                    student_usage.setdefault(s, set()).add((week, day, slot))
-
+                block_usage[(week, day, slot, block)] = sec
                 session_count[sec] += 1
 
         # --------------------------------------------------
         # RESULTS
         # --------------------------------------------------
-        schedule_df = pd.DataFrame(schedule,
-                                   columns=["Section", "Week", "Day", "Slot", "Room"])
+        schedule_df = pd.DataFrame(schedule, columns=[
+            "Section", "Block", "Week", "Day", "Slot", "Room"
+        ])
 
-        total_required = len(sections_sorted) * SESSIONS_PER_SECTION
+        total_required = len(sections) * SESSIONS_PER_SECTION
         total_scheduled = len(schedule_df)
         completion_rate = round((total_scheduled / total_required) * 100, 2)
 
@@ -150,11 +154,9 @@ if uploaded_file:
         st.write("Completion Rate:", completion_rate, "%")
 
         if completion_rate == 100:
-            st.success("Complete conflict-free timetable generated")
-        elif completion_rate >= 90:
-            st.warning("Near-complete scheduling. Minor conflicts due to high student overlap.")
+            st.success("Complete timetable generated with block-based conflict control")
         else:
-            st.error("Low completion due to heavy student overlap. Consider additional slots or rooms.")
+            st.warning("Partial scheduling — increase number of blocks or rooms")
 
         st.subheader("Sample Schedule")
         st.dataframe(schedule_df.head(20))
