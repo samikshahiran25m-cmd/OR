@@ -2,108 +2,113 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 
-st.title("AI-Based MBA Timetable Scheduler")
-st.write("Conflict-free scheduling with dynamic classroom capacity")
+st.title("MBA Timetable Scheduler (2 Section Model)")
+st.write("Program-level scheduling with Section A and Section B")
 
-# -------------------------
+# --------------------------
 # PARAMETERS
-# -------------------------
-SECTION_LIMIT = 70
+# --------------------------
 SESSIONS_PER_SECTION = 20
 
 weeks = list(range(1, 11))
-days = list(range(1, 7))    # Mon–Sat
-slots = list(range(1, 7))   # 6 slots per day
+days = list(range(1, 7))
+slots = list(range(1, 7))
 
 def get_rooms(week):
     return list(range(1, 11)) if week <= 4 else list(range(1, 5))
 
-# -------------------------
+# --------------------------
 # FILE UPLOAD
-# -------------------------
+# --------------------------
 uploaded_file = st.file_uploader("Upload WAI_Data.xlsx", type=["xlsx"])
 
 if uploaded_file:
 
     xls = pd.ExcelFile(uploaded_file)
 
-    sections = []
-    section_students = {}
-    student_sections = {}
+    # --------------------------
+    # GET UNIQUE STUDENTS
+    # --------------------------
+    all_students = set()
+    course_students = {}
 
-    # -------------------------
-    # CREATE SECTIONS
-    # -------------------------
     for sheet in xls.sheet_names:
         df = pd.read_excel(uploaded_file, sheet_name=sheet)
         students = df.iloc[:, 0].dropna().astype(str).tolist()
-        n = len(students)
+        course_students[sheet] = students
+        all_students.update(students)
 
-        if n == 0:
-            continue
+    all_students = list(all_students)
 
-        if n <= SECTION_LIMIT:
-            sec = f"{sheet}_A"
-            sections.append(sec)
-            section_students[sec] = students
-        else:
-            mid = n // 2
-            sec1 = f"{sheet}_A"
-            sec2 = f"{sheet}_B"
-            sections.extend([sec1, sec2])
-            section_students[sec1] = students[:mid]
-            section_students[sec2] = students[mid:]
+    # --------------------------
+    # CREATE TWO SECTIONS
+    # --------------------------
+    mid = len(all_students) // 2
+    section_A_students = set(all_students[:mid])
+    section_B_students = set(all_students[mid:])
 
-    # student → sections map
-    for sec, students in section_students.items():
-        for s in students:
-            student_sections.setdefault(s, []).append(sec)
+    st.success(f"Total Students: {len(all_students)}")
+    st.success("Program divided into Section A and Section B")
 
-    st.success(f"Total Sections Created: {len(sections)}")
+    # --------------------------
+    # CREATE COURSE-SECTIONS
+    # Each course runs for A and B
+    # --------------------------
+    sections = []
+    section_students = {}
 
-    # -------------------------
+    for course in course_students:
+        secA = f"{course}_A"
+        secB = f"{course}_B"
+
+        # Students of that course belonging to each section
+        section_students[secA] = list(
+            set(course_students[course]) & section_A_students
+        )
+        section_students[secB] = list(
+            set(course_students[course]) & section_B_students
+        )
+
+        sections.extend([secA, secB])
+
+    st.success(f"Total Teaching Sections: {len(sections)}")
+
+    # --------------------------
     # GENERATE TIMETABLE
-    # -------------------------
+    # --------------------------
     if st.button("Generate Timetable"):
 
-        # Tracking usage
-        room_usage = {}        # (week,day,slot,room)
-        student_usage = {}     # student → set of (week,day,slot)
+        room_usage = {}
+        student_usage = {}
         schedule = []
-        section_session_count = {sec: 0 for sec in sections}
+        session_count = {sec: 0 for sec in sections}
 
-        # -------------------------
-        # FRONT-LOADING ORDER
-        # Weeks 1–4 first (higher capacity)
-        # -------------------------
-        time_order = []
+        # Time priority (front-load early weeks)
+        time_slots = []
         for week in weeks:
             for day in days:
                 for slot in slots:
-                    rooms = get_rooms(week)
-                    for room in rooms:
-                        time_order.append((week, day, slot, room))
+                    for room in get_rooms(week):
+                        time_slots.append((week, day, slot, room))
 
-        # Sort so weeks 1–4 come first
-        time_order.sort(key=lambda x: x[0])
+        time_slots.sort(key=lambda x: x[0])  # weeks 1–4 first
 
-        # -------------------------
-        # GREEDY SCHEDULING
-        # -------------------------
+        # --------------------------
+        # GREEDY ASSIGNMENT
+        # --------------------------
         for sec in sections:
-
             students = section_students[sec]
 
-            for (week, day, slot, room) in time_order:
+            for (week, day, slot, room) in time_slots:
 
-                if section_session_count[sec] >= SESSIONS_PER_SECTION:
+                if session_count[sec] >= SESSIONS_PER_SECTION:
                     break
 
-                # Room available?
+                # Room conflict
                 if (week, day, slot, room) in room_usage:
                     continue
 
-                # Student conflict check
+                # Student conflict
                 conflict = False
                 for s in students:
                     if (week, day, slot) in student_usage.get(s, set()):
@@ -113,50 +118,47 @@ if uploaded_file:
                 if conflict:
                     continue
 
-                # Assign session
+                # Assign
                 schedule.append([sec, week, day, slot, room])
                 room_usage[(week, day, slot, room)] = sec
 
                 for s in students:
                     student_usage.setdefault(s, set()).add((week, day, slot))
 
-                section_session_count[sec] += 1
+                session_count[sec] += 1
 
-        # -------------------------
-        # RESULTS
-        # -------------------------
+        # --------------------------
+        # OUTPUT
+        # --------------------------
         schedule_df = pd.DataFrame(
             schedule,
             columns=["Section", "Week", "Day", "Slot", "Room"]
         )
 
-        # Summary metrics
         total_required = len(sections) * SESSIONS_PER_SECTION
         total_scheduled = len(schedule_df)
-        completion_rate = round((total_scheduled / total_required) * 100, 2)
+        completion = round((total_scheduled / total_required) * 100, 2)
 
         st.subheader("Scheduling Summary")
-        st.write(f"Total Sessions Required: {total_required}")
-        st.write(f"Total Sessions Scheduled: {total_scheduled}")
-        st.write(f"Completion Rate: {completion_rate}%")
+        st.write("Sessions Required:", total_required)
+        st.write("Sessions Scheduled:", total_scheduled)
+        st.write("Completion Rate:", completion, "%")
 
-        if completion_rate < 100:
-            st.warning("Capacity constraints prevented full scheduling. Increase slots or rooms.")
+        if completion == 100:
+            st.success("Complete timetable generated")
         else:
-            st.success("Complete Conflict-Free Timetable Generated")
+            st.warning("Capacity constraints prevented full scheduling")
 
         st.dataframe(schedule_df.head(20))
 
-        # -------------------------
-        # DOWNLOAD
-        # -------------------------
+        # Download
         output = BytesIO()
         schedule_df.to_excel(output, index=False)
         output.seek(0)
 
         st.download_button(
-            label="Download Final Timetable",
-            data=output,
-            file_name="Final_Timetable.xlsx",
+            "Download Timetable",
+            output,
+            "Final_Timetable.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
